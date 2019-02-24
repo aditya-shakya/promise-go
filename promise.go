@@ -28,12 +28,12 @@ func (p *Promise) reject(error_message string) {
 	}(p, error_message)
 }
 
-func (p *Promise) init(runner func(resolve func(string), reject func(string))) *Promise {
+func (p *Promise) init(runner func(resolve func(string), reject func(string))) {
 	p.state = "pending"
 	p.success = make(chan string)
 	p.failure = make(chan string)
 	runner(p.resolve, p.reject)
-	return p
+
 }
 
 func execute_goroutine(channel chan string, onMessage func(string)) {
@@ -46,7 +46,7 @@ func (p *Promise) catch(onRejected func(string)) *Promise {
 	return p
 }
 
-func (p *Promise) then(onFulfilled func(string), onRejected func(string)) *Promise {
+func (p *Promise) then(onFulfilled func(string), onRejected func(string)) {
 	go func() {
 		select {
 		case error_message := <-p.failure:
@@ -55,7 +55,6 @@ func (p *Promise) then(onFulfilled func(string), onRejected func(string)) *Promi
 			go onFulfilled(result)
 		}
 	}()
-	return p
 }
 
 func (p *Promise) fanally(onFinally func()) {
@@ -75,38 +74,30 @@ func (p *Promise) fanally(onFinally func()) {
 	go onFinally()
 }
 
-// func add(a int, b int) (int, error){
-// 	sum := a + b
-// 	if sum == 4 {
-// 		return sum, Errors.new("this is a error")
-// 	}
-// 	return a + b, nil
-// }
-
 func main() {
 	p := new(Promise)
 	// fmt.Println(p)
 	p.init(func(resolve func(string), reject func(string)) {
-		is_success := false
+		is_success := true
 		if is_success {
 			resolve("done")
 		} else {
 			reject("Rejected Message")
 		}
-	}).then(func(msg string) {
+	})
+	p.then(func(msg string) {
 		fmt.Println("Then Resolve")
 		fmt.Println(msg)
 	}, func(msg string) {
 		fmt.Println("Then Reject")
 		fmt.Println(msg)
-	}).fanally(func() {
+	})
+
+	p.fanally(func() {
 		fmt.Println("finally")
 		fmt.Println(p)
 	})
-	// .catch(func(msg string) {
-	// 	fmt.Println("In catch")
-	// 	fmt.Println(msg)
-	// })
+
 	time.Sleep(time.Second * 2)
 
 }
