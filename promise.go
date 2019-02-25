@@ -7,40 +7,93 @@ import (
 	"time"
 )
 
-// import "errors"
 var once sync.Once
 
 type Promise struct {
-	success   chan interface{}
-	failure   chan error
-	final     chan struct{}
-	state     string
-	result    interface{}
-	error_msg error
+	success                 chan interface{}
+	failure                 chan error
+	state                   string
+	result                  interface{}
+	error_msg               error
+	successBroadcastListner []chan interface{}
+	failureBroadcastListner []chan error
+
+	wg  sync.WaitGroup
+	mux sync.RWMutex
 }
 
 func (p *Promise) resolve(result interface{}) {
 	go func(p *Promise, result interface{}) {
+		p.mux.RLock()
 		p.success <- result
+		p.closeChannels()
 		p.state = "success"
 		p.result = result
+		p.mux.RUnlock()
 	}(p, result)
 }
 
 func (p *Promise) reject(error_message error) {
 	go func(p *Promise, error_message error) {
+		p.mux.RLock()
 		p.failure <- error_message
+		p.closeChannels()
 		p.state = "rejected"
 		p.error_msg = error_message
+		p.mux.RUnlock()
 	}(p, error_message)
+}
+func (p *Promise) closeChannels() {
+	close(p.success)
+	close(p.failure)
+}
+func (p *Promise) addSuccessListner() chan interface{} {
+	ch := make(chan interface{})
+	p.successBroadcastListner = append(p.successBroadcastListner, ch)
+	return ch
+}
+
+func (p *Promise) addFailureListner() chan error {
+	ch := make(chan error)
+	p.failureBroadcastListner = append(p.failureBroadcastListner, ch)
+	return ch
+}
+
+func (p *Promise) broadcastSuccess(msg interface{}) {
+	for _, ch := range p.successBroadcastListner {
+		go func(ch chan interface{}, msg interface{}) {
+			ch <- msg
+			close(ch)
+		}(ch, msg)
+	}
+}
+
+func (p *Promise) broadcastFailure(err error) {
+	for _, ch := range p.failureBroadcastListner {
+		go func(ch chan error, err error) {
+			ch <- err
+			close(ch)
+		}(ch, err)
+	}
 }
 
 func (p *Promise) init(runner func(resolve func(interface{}), reject func(error))) {
 	p.state = "pending"
 	p.success = make(chan interface{})
 	p.failure = make(chan error)
-	p.final = make(chan struct{})
 	go runner(p.resolve, p.reject)
+	go func() {
+		select {
+		case result := <-p.success:
+			p.result = result
+			p.state = "success"
+			p.broadcastSuccess(result)
+		case error_message := <-p.failure:
+			p.error_msg = error_message
+			p.state = "rejected"
+			p.broadcastFailure(error_message)
+		}
+	}()
 }
 
 func (p *Promise) newPromise() *Promise {
@@ -48,7 +101,25 @@ func (p *Promise) newPromise() *Promise {
 	pr.state = "pending"
 	pr.success = make(chan interface{})
 	pr.failure = make(chan error)
-	pr.final = make(chan struct{})
+
+	go func() {
+		select {
+		case result := <-pr.success:
+			pr.mux.RLock()
+			pr.closeChannels()
+			pr.result = result
+			pr.state = "success"
+			pr.broadcastSuccess(result)
+			pr.mux.RUnlock()
+		case error_message := <-pr.failure:
+			pr.mux.RLock()
+			pr.closeChannels()
+			pr.error_msg = error_message
+			pr.state = "rejected"
+			pr.broadcastFailure(error_message)
+			pr.mux.RUnlock()
+		}
+	}()
 
 	return pr
 }
@@ -89,8 +160,9 @@ func (p *Promise) catch(onRejected func(error) interface{}) *Promise {
 	pr := p.newPromise()
 	go func() {
 		if p.state == "pending" {
+			failure := p.addFailureListner()
 			select {
-			case error_message := <-p.failure:
+			case error_message := <-failure:
 				pr.execute_and_pass_rejected(onRejected, error_message)
 			}
 		} else if p.state == "rejected" {
@@ -104,10 +176,12 @@ func (p *Promise) then(onFulfilled func(interface{}) interface{}, onRejected fun
 	pr := p.newPromise()
 	go func() {
 		if p.state == "pending" {
+			failure := p.addFailureListner()
+			success := p.addSuccessListner()
 			select {
-			case error_message := <-p.failure:
+			case error_message := <-failure:
 				pr.execute_and_pass_rejected(onRejected, error_message)
-			case result := <-p.success:
+			case result := <-success:
 				pr.execute_and_pass_result(onFulfilled, result)
 			}
 		} else if p.state == "success" {
@@ -123,10 +197,12 @@ func (p *Promise) finally(onFinally func() interface{}) *Promise {
 	pr := p.newPromise()
 	go func() {
 		if p.state == "pending" {
+			failure := p.addFailureListner()
+			success := p.addSuccessListner()
 			select {
-			case <-p.success:
+			case <-success:
 				pr.execute_and_pass_final(onFinally)
-			case <-p.failure:
+			case <-failure:
 				pr.execute_and_pass_final(onFinally)
 			}
 		} else {
@@ -227,14 +303,16 @@ func main() {
 		err := errors.New("Then Error")
 		return err
 	}, func(err error) interface{} {
-		return 1
+		return 2
 	}).catch(func(err error) interface{} {
 		fmt.Println(err)
-		return 1
+		return 8
 	}).finally(func() interface{} {
 		fmt.Println("Finally")
-		return 1
+		return 4
 	})
+
+	// fmt.Println(x)
 
 	//===============================================================
 	time.Sleep(time.Second * 2)
