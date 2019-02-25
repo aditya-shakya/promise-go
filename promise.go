@@ -23,6 +23,7 @@ func (p *Promise) resolve(result interface{}) {
 	go func(p *Promise, result interface{}) {
 		p.success <- result
 		p.state = "success"
+		p.result = result
 	}(p, result)
 }
 
@@ -30,6 +31,7 @@ func (p *Promise) reject(error_message error) {
 	go func(p *Promise, error_message error) {
 		p.failure <- error_message
 		p.state = "rejected"
+		p.error_msg = error_message
 	}(p, error_message)
 }
 
