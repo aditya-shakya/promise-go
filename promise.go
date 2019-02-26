@@ -7,192 +7,314 @@ import (
 	"time"
 )
 
-// import "errors"
 var once sync.Once
 
 type Promise struct {
-	success chan string
-	failure chan error
-	final   chan struct{}
-	state   string
-	wg      sync.WaitGroup
+	success                 chan interface{}
+	failure                 chan error
+	state                   string
+	result                  interface{}
+	error_msg               error
+	successBroadcastListner []chan interface{}
+	failureBroadcastListner []chan error
 
-	onFinallyCallbacks []func()
-
-	onRejectedCallbacks  []func(error)
-	onFulfilledCallbacks []func(string)
+	wg  sync.WaitGroup
+	mux sync.RWMutex
 }
 
-func (p *Promise) resolve(result string) {
-	go func(p *Promise, result string) {
+func (p *Promise) resolve(result interface{}) {
+	go func(p *Promise, result interface{}) {
+		p.mux.RLock()
 		p.success <- result
+		p.closeChannels()
 		p.state = "success"
+		p.result = result
+		p.mux.RUnlock()
 	}(p, result)
-
 }
 
 func (p *Promise) reject(error_message error) {
 	go func(p *Promise, error_message error) {
+		p.mux.RLock()
 		p.failure <- error_message
+		p.closeChannels()
 		p.state = "rejected"
+		p.error_msg = error_message
+		p.mux.RUnlock()
 	}(p, error_message)
 }
+func (p *Promise) closeChannels() {
+	close(p.success)
+	close(p.failure)
+}
+func (p *Promise) addSuccessListner() chan interface{} {
+	ch := make(chan interface{})
+	p.successBroadcastListner = append(p.successBroadcastListner, ch)
+	return ch
+}
 
-func (p *Promise) init(runner func(resolve func(string), reject func(error))) {
+func (p *Promise) addFailureListner() chan error {
+	ch := make(chan error)
+	p.failureBroadcastListner = append(p.failureBroadcastListner, ch)
+	return ch
+}
+
+func (p *Promise) broadcastSuccess(msg interface{}) {
+	for _, ch := range p.successBroadcastListner {
+		go func(ch chan interface{}, msg interface{}) {
+			ch <- msg
+			close(ch)
+		}(ch, msg)
+	}
+}
+
+func (p *Promise) broadcastFailure(err error) {
+	for _, ch := range p.failureBroadcastListner {
+		go func(ch chan error, err error) {
+			ch <- err
+			close(ch)
+		}(ch, err)
+	}
+}
+
+func (p *Promise) init(runner func(resolve func(interface{}), reject func(error))) {
 	p.state = "pending"
-	p.success = make(chan string)
+	p.success = make(chan interface{})
 	p.failure = make(chan error)
-	p.final = make(chan struct{})
-	runner(p.resolve, p.reject)
+	go runner(p.resolve, p.reject)
+	go func() {
+		select {
+		case result := <-p.success:
+			p.result = result
+			p.state = "success"
+			p.broadcastSuccess(result)
+		case error_message := <-p.failure:
+			p.error_msg = error_message
+			p.state = "rejected"
+			p.broadcastFailure(error_message)
+		}
+	}()
 }
 
-//+++++++++++ executer methods for rejected +++++++++++++++++++++++++++
-func (p *Promise) executeRejected(error_message error) {
-	for _, callback := range p.onRejectedCallbacks {
-		p.wg.Add(1)
-		go func(error_message error, callback func(error)) {
-			callback(error_message)
-			p.wg.Done()
-		}(error_message, callback)
-	}
-	p.wg.Wait()
-	p.final <- struct{}{}
-}
+func (p *Promise) newPromise() *Promise {
+	pr := new(Promise)
+	pr.state = "pending"
+	pr.success = make(chan interface{})
+	pr.failure = make(chan error)
 
-//+++++++++++ executer methods for fullfilled +++++++++++++++++++++++++++
-func (p *Promise) executeFulfilled(msg string) {
-	for _, callback := range p.onFulfilledCallbacks {
-		p.wg.Add(1)
-		go func(msg string, callback func(string)) {
-			callback(msg)
-			p.wg.Done()
-		}(msg, callback)
-	}
-	p.wg.Wait()
-	p.final <- struct{}{}
-}
+	go func() {
+		select {
+		case result := <-pr.success:
+			pr.mux.RLock()
+			pr.closeChannels()
+			pr.result = result
+			pr.state = "success"
+			pr.broadcastSuccess(result)
+			pr.mux.RUnlock()
+		case error_message := <-pr.failure:
+			pr.mux.RLock()
+			pr.closeChannels()
+			pr.error_msg = error_message
+			pr.state = "rejected"
+			pr.broadcastFailure(error_message)
+			pr.mux.RUnlock()
+		}
+	}()
 
-//+++++++++++ executer methods for finally +++++++++++++++++++++++++++
-func (p *Promise) executeFinally() {
-	for _, callback := range p.onFinallyCallbacks {
-		go callback()
-	}
+	return pr
 }
 
 //====================================================================
+func (pr *Promise) execute_and_pass_rejected(onRejected func(error) interface{}, err error) {
+	resp := onRejected(err)
+	switch data := resp.(type) {
+	case error:
+		pr.failure <- data
+	default:
+		pr.success <- data
+	}
+}
+
+func (pr *Promise) execute_and_pass_result(onFulfilled func(interface{}) interface{}, msg interface{}) {
+	resp := onFulfilled(msg)
+	switch data := resp.(type) {
+	case error:
+		pr.failure <- data
+	default:
+		pr.success <- data
+	}
+}
+
+func (pr *Promise) execute_and_pass_final(onFinally func() interface{}) {
+	resp := onFinally()
+	switch data := resp.(type) {
+	case error:
+		pr.failure <- data
+	default:
+		pr.success <- data
+	}
+}
 
 //+++++++++++++++++++++++++ catch, then and finally +++++++++++++++++++++
-func (p *Promise) catch(onRejected func(error)) {
-	p.onRejectedCallbacks = append(p.onRejectedCallbacks, onRejected)
-	catchListner := func() {
-		go func() {
+func (p *Promise) catch(onRejected func(error) interface{}) *Promise {
+	pr := p.newPromise()
+	go func() {
+		if p.state == "pending" {
+			failure := p.addFailureListner()
 			select {
-			case error_message := <-p.failure:
-				p.executeRejected(error_message)
+			case error_message := <-failure:
+				pr.execute_and_pass_rejected(onRejected, error_message)
 			}
-		}()
-	}
-	once.Do(catchListner)
+		} else if p.state == "rejected" {
+			pr.execute_and_pass_rejected(onRejected, p.error_msg)
+		}
+	}()
+	return pr
 }
 
-func (p *Promise) then(onFulfilled func(string), onRejected func(error)) {
-	p.onFulfilledCallbacks = append(p.onFulfilledCallbacks, onFulfilled)
-	p.onRejectedCallbacks = append(p.onRejectedCallbacks, onRejected)
-
-	thenListner := func() {
-		go func() {
+func (p *Promise) then(onFulfilled func(interface{}) interface{}, onRejected func(error) interface{}) *Promise {
+	pr := p.newPromise()
+	go func() {
+		if p.state == "pending" {
+			failure := p.addFailureListner()
+			success := p.addSuccessListner()
 			select {
-			case error_message := <-p.failure:
-				p.executeRejected(error_message)
-			case result := <-p.success:
-				p.executeFulfilled(result)
+			case error_message := <-failure:
+				pr.execute_and_pass_rejected(onRejected, error_message)
+			case result := <-success:
+				pr.execute_and_pass_result(onFulfilled, result)
 			}
-		}()
-	}
-	once.Do(thenListner)
+		} else if p.state == "success" {
+			pr.execute_and_pass_result(onFulfilled, p.result)
+		} else if p.state == "rejected" {
+			pr.execute_and_pass_rejected(onRejected, p.error_msg)
+		}
+	}()
+	return pr
 }
 
-func (p *Promise) fanally(onFinally func()) {
-	p.onFinallyCallbacks = append(p.onFinallyCallbacks, onFinally)
-
-	finallyListner := func() {
-		go func() {
+func (p *Promise) finally(onFinally func() interface{}) *Promise {
+	pr := p.newPromise()
+	go func() {
+		if p.state == "pending" {
+			failure := p.addFailureListner()
+			success := p.addSuccessListner()
 			select {
-			case <-p.final:
-				p.executeFinally()
+			case <-success:
+				pr.execute_and_pass_final(onFinally)
+			case <-failure:
+				pr.execute_and_pass_final(onFinally)
 			}
-		}()
-	}
-
-	finallyListner()
+		} else {
+			pr.execute_and_pass_final(onFinally)
+		}
+	}()
+	return pr
 }
 
 // =========================== Demo ========================================
 func main() {
 	p := new(Promise)
 
-	p.init(func(resolve func(string), reject func(error)) {
-		is_success := false
+	// ++++++++++++++++++++++ Demo - Chained catch ++++++++++++++++++++
+
+	// p.init(func(resolve func(interface{}), reject func(error)) {
+	// 	is_success := false
+	// 	if is_success {
+	// 		resolve(1)
+	// 	} else {
+	// 		er := errors.New("Rejected Message ")
+	// 		reject(er)
+	// 	}
+	// })
+	// p.catch(func(err error) interface{} {
+	// 	fmt.Println(err)
+	// 	str := err.Error()
+	// 	er := errors.New(str + "catch_1 ")
+	// 	return er
+	// }).catch(func(err error) interface{} {
+	// 	fmt.Println(err)
+	// 	str := err.Error()
+	// 	er := errors.New(str + "catch_2 ")
+	// 	return er
+	// }).catch(func(err error) interface{} {
+	// 	fmt.Println(err)
+	// 	str := err.Error()
+	// 	er := errors.New(str + "catch_3 ")
+	// 	return er
+	// })
+
+	//===============================================================
+
+	//+++++++++++++++++++ chained then demo +++++++++++++++++++++++++++
+
+	// p.init(func(resolve func(interface{}), reject func(error)) {
+	// 	is_success := true
+	// 	if is_success {
+	// 		resolve(1)
+	// 	} else {
+	// 		er := errors.New("Rejected Message ")
+	// 		reject(er)
+	// 	}
+	// })
+
+	// p.then(func(msg interface{}) interface{} {
+	// 	fmt.Println(msg)
+	// 	val := msg.(int)
+	// 	return val * 3
+	// }, func(msg error) interface{} {
+	// 	fmt.Println("Then Reject 3")
+	// 	return 1
+	// }).then(func(msg interface{}) interface{} {
+	// 	fmt.Println(msg)
+	// 	val := msg.(int)
+
+	// 	return val * 3
+	// }, func(msg error) interface{} {
+	// 	fmt.Println("Then Reject 4")
+	// 	return 1
+	// }).then(func(msg interface{}) interface{} {
+	// 	fmt.Println(msg)
+	// 	val := msg.(int)
+
+	// 	return val * 3
+	// }, func(msg error) interface{} {
+	// 	fmt.Println("Then Reject 4")
+	// 	return 1
+	// })
+
+	//===============================================================
+
+	//++++++++++++++++++++++++ Demo - complex chain +++++++++++++++++
+
+	p.init(func(resolve func(interface{}), reject func(error)) {
+		is_success := true
 		if is_success {
-			resolve("done")
+			resolve(1)
 		} else {
-			er := errors.New("Rejected Message")
+			er := errors.New("Rejected Message ")
 			reject(er)
 		}
 	})
 
-	p.then(func(msg string) {
-		fmt.Println("Then Resolve 1")
-	}, func(msg error) {
-		fmt.Println("Then Reject 1")
+	p.then(func(msg interface{}) interface{} {
+		val := msg.(int)
+		fmt.Println("Then", val*3)
+		err := errors.New("Then Error")
+		return err
+	}, func(err error) interface{} {
+		return 2
+	}).catch(func(err error) interface{} {
+		fmt.Println(err)
+		return 8
+	}).finally(func() interface{} {
+		fmt.Println("Finally")
+		return 4
 	})
 
-	p.then(func(msg string) {
-		fmt.Println("Then Resolve 2")
-	}, func(msg error) {
-		fmt.Println("Then Reject 2")
-	})
+	// fmt.Println(x)
 
-	p.then(func(msg string) {
-		fmt.Println("Then Resolve 3")
-	}, func(msg error) {
-		fmt.Println("Then Reject 3")
-	})
-
-	p.then(func(msg string) {
-		fmt.Println("Then Resolve 4")
-	}, func(msg error) {
-		fmt.Println("Then Reject 4")
-	})
-	p.catch(func(msg error) {
-		fmt.Println("Then Reject 1")
-	})
-
-	p.catch(func(msg error) {
-		fmt.Println("Then Reject 2")
-	})
-	p.catch(func(msg error) {
-		fmt.Println("Then Reject 3")
-	})
-	p.catch(func(msg error) {
-		fmt.Println("Then Reject 4")
-	})
-
-	p.fanally(func() {
-		fmt.Println("finally 1")
-	})
-
-	p.fanally(func() {
-		fmt.Println("finally 2")
-	})
-
-	p.fanally(func() {
-		fmt.Println("finally 3")
-	})
-
-	p.fanally(func() {
-		fmt.Println("finally 4")
-	})
+	//===============================================================
 	time.Sleep(time.Second * 2)
 
 }
