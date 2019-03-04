@@ -24,23 +24,13 @@ type Promise struct {
 
 func (p *Promise) resolve(result interface{}) {
 	go func(p *Promise, result interface{}) {
-		p.mux.RLock()
 		p.success <- result
-		p.closeChannels()
-		p.state = "success"
-		p.result = result
-		p.mux.RUnlock()
 	}(p, result)
 }
 
 func (p *Promise) reject(error_message error) {
 	go func(p *Promise, error_message error) {
-		p.mux.RLock()
 		p.failure <- error_message
-		p.closeChannels()
-		p.state = "rejected"
-		p.error_msg = error_message
-		p.mux.RUnlock()
 	}(p, error_message)
 }
 func (p *Promise) closeChannels() {
@@ -77,51 +67,31 @@ func (p *Promise) broadcastFailure(err error) {
 	}
 }
 
-func (p *Promise) init(runner func(resolve func(interface{}), reject func(error))) {
+func NewPromise(runner func(resolve func(interface{}), reject func(error))) *Promise {
+	p := new(Promise)
 	p.state = "pending"
 	p.success = make(chan interface{})
 	p.failure = make(chan error)
-	go runner(p.resolve, p.reject)
 	go func() {
 		select {
 		case result := <-p.success:
+			p.mux.RLock()
+			p.closeChannels()
 			p.result = result
 			p.state = "success"
 			p.broadcastSuccess(result)
+			p.mux.RUnlock()
 		case error_message := <-p.failure:
+			p.mux.RLock()
+			p.closeChannels()
 			p.error_msg = error_message
 			p.state = "rejected"
 			p.broadcastFailure(error_message)
+			p.mux.RUnlock()
 		}
 	}()
-}
-
-func (p *Promise) newPromise() *Promise {
-	pr := new(Promise)
-	pr.state = "pending"
-	pr.success = make(chan interface{})
-	pr.failure = make(chan error)
-
-	go func() {
-		select {
-		case result := <-pr.success:
-			pr.mux.RLock()
-			pr.closeChannels()
-			pr.result = result
-			pr.state = "success"
-			pr.broadcastSuccess(result)
-			pr.mux.RUnlock()
-		case error_message := <-pr.failure:
-			pr.mux.RLock()
-			pr.closeChannels()
-			pr.error_msg = error_message
-			pr.state = "rejected"
-			pr.broadcastFailure(error_message)
-			pr.mux.RUnlock()
-		}
-	}()
-
-	return pr
+	go runner(p.resolve, p.reject)
+	return p
 }
 
 //====================================================================
@@ -157,7 +127,7 @@ func (pr *Promise) execute_and_pass_final(onFinally func() interface{}) {
 
 //+++++++++++++++++++++++++ catch, then and finally +++++++++++++++++++++
 func (p *Promise) catch(onRejected func(error) interface{}) *Promise {
-	pr := p.newPromise()
+	pr := NewPromise(func(resolve func(interface{}), reject func(error)) {})
 	go func() {
 		if p.state == "pending" {
 			failure := p.addFailureListner()
@@ -173,7 +143,7 @@ func (p *Promise) catch(onRejected func(error) interface{}) *Promise {
 }
 
 func (p *Promise) then(onFulfilled func(interface{}) interface{}, onRejected func(error) interface{}) *Promise {
-	pr := p.newPromise()
+	pr := NewPromise(func(resolve func(interface{}), reject func(error)) {})
 	go func() {
 		if p.state == "pending" {
 			failure := p.addFailureListner()
@@ -194,7 +164,7 @@ func (p *Promise) then(onFulfilled func(interface{}) interface{}, onRejected fun
 }
 
 func (p *Promise) finally(onFinally func() interface{}) *Promise {
-	pr := p.newPromise()
+	pr := NewPromise(func(resolve func(interface{}), reject func(error)) {})
 	go func() {
 		if p.state == "pending" {
 			failure := p.addFailureListner()
@@ -214,11 +184,10 @@ func (p *Promise) finally(onFinally func() interface{}) *Promise {
 
 // =========================== Demo ========================================
 func main() {
-	p := new(Promise)
 
 	// ++++++++++++++++++++++ Demo - Chained catch ++++++++++++++++++++
 
-	// p.init(func(resolve func(interface{}), reject func(error)) {
+	// p := NewPromise(func(resolve func(interface{}), reject func(error)) {
 	// 	is_success := false
 	// 	if is_success {
 	// 		resolve(1)
@@ -248,7 +217,7 @@ func main() {
 
 	//+++++++++++++++++++ chained then demo +++++++++++++++++++++++++++
 
-	// p.init(func(resolve func(interface{}), reject func(error)) {
+	// p := NewPromise(func(resolve func(interface{}), reject func(error)) {
 	// 	is_success := true
 	// 	if is_success {
 	// 		resolve(1)
@@ -287,7 +256,7 @@ func main() {
 
 	//++++++++++++++++++++++++ Demo - complex chain +++++++++++++++++
 
-	p.init(func(resolve func(interface{}), reject func(error)) {
+	p := NewPromise(func(resolve func(interface{}), reject func(error)) {
 		is_success := true
 		if is_success {
 			resolve(1)
