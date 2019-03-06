@@ -66,10 +66,10 @@ func (p *Promise) broadcastFailure(err error) {
 
 func NewPromise(runner func(resolve func(interface{}), reject func(error))) *Promise {
 	p := new(Promise)
+	p.wg.Add(1)
 	p.state = "pending"
 	p.success = make(chan interface{})
 	p.failure = make(chan error)
-	p.wg.Add(1)
 	go func() {
 		p.wg.Done()
 		select {
