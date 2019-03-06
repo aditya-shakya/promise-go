@@ -1,10 +1,7 @@
-package main
+package promise
 
 import (
-	"errors"
-	"fmt"
 	"sync"
-	"time"
 )
 
 var once sync.Once
@@ -126,7 +123,7 @@ func (pr *Promise) execute_and_pass_final(onFinally func() interface{}) {
 }
 
 //+++++++++++++++++++++++++ catch, then and finally +++++++++++++++++++++
-func (p *Promise) catch(onRejected func(error) interface{}) *Promise {
+func (p *Promise) Catch(onRejected func(error) interface{}) *Promise {
 	pr := NewPromise(func(resolve func(interface{}), reject func(error)) {})
 	go func() {
 		if p.state == "pending" {
@@ -142,7 +139,7 @@ func (p *Promise) catch(onRejected func(error) interface{}) *Promise {
 	return pr
 }
 
-func (p *Promise) then(onFulfilled func(interface{}) interface{}, onRejected func(error) interface{}) *Promise {
+func (p *Promise) Then(onFulfilled func(interface{}) interface{}, onRejected func(error) interface{}) *Promise {
 	pr := NewPromise(func(resolve func(interface{}), reject func(error)) {})
 	go func() {
 		if p.state == "pending" {
@@ -163,7 +160,7 @@ func (p *Promise) then(onFulfilled func(interface{}) interface{}, onRejected fun
 	return pr
 }
 
-func (p *Promise) finally(onFinally func() interface{}) *Promise {
+func (p *Promise) Finally(onFinally func() interface{}) *Promise {
 	pr := NewPromise(func(resolve func(interface{}), reject func(error)) {})
 	go func() {
 		if p.state == "pending" {
@@ -180,110 +177,4 @@ func (p *Promise) finally(onFinally func() interface{}) *Promise {
 		}
 	}()
 	return pr
-}
-
-// =========================== Demo ========================================
-func main() {
-
-	// ++++++++++++++++++++++ Demo - Chained catch ++++++++++++++++++++
-
-	// p := NewPromise(func(resolve func(interface{}), reject func(error)) {
-	// 	is_success := false
-	// 	if is_success {
-	// 		resolve(1)
-	// 	} else {
-	// 		er := errors.New("Rejected Message ")
-	// 		reject(er)
-	// 	}
-	// })
-	// p.catch(func(err error) interface{} {
-	// 	fmt.Println(err)
-	// 	str := err.Error()
-	// 	er := errors.New(str + "catch_1 ")
-	// 	return er
-	// }).catch(func(err error) interface{} {
-	// 	fmt.Println(err)
-	// 	str := err.Error()
-	// 	er := errors.New(str + "catch_2 ")
-	// 	return er
-	// }).catch(func(err error) interface{} {
-	// 	fmt.Println(err)
-	// 	str := err.Error()
-	// 	er := errors.New(str + "catch_3 ")
-	// 	return er
-	// })
-
-	//===============================================================
-
-	//+++++++++++++++++++ chained then demo +++++++++++++++++++++++++++
-
-	// p := NewPromise(func(resolve func(interface{}), reject func(error)) {
-	// 	is_success := true
-	// 	if is_success {
-	// 		resolve(1)
-	// 	} else {
-	// 		er := errors.New("Rejected Message ")
-	// 		reject(er)
-	// 	}
-	// })
-
-	// p.then(func(msg interface{}) interface{} {
-	// 	fmt.Println(msg)
-	// 	val := msg.(int)
-	// 	return val * 3
-	// }, func(msg error) interface{} {
-	// 	fmt.Println("Then Reject 3")
-	// 	return 1
-	// }).then(func(msg interface{}) interface{} {
-	// 	fmt.Println(msg)
-	// 	val := msg.(int)
-
-	// 	return val * 3
-	// }, func(msg error) interface{} {
-	// 	fmt.Println("Then Reject 4")
-	// 	return 1
-	// }).then(func(msg interface{}) interface{} {
-	// 	fmt.Println(msg)
-	// 	val := msg.(int)
-
-	// 	return val * 3
-	// }, func(msg error) interface{} {
-	// 	fmt.Println("Then Reject 4")
-	// 	return 1
-	// })
-
-	//===============================================================
-
-	//++++++++++++++++++++++++ Demo - complex chain +++++++++++++++++
-
-	p := NewPromise(func(resolve func(interface{}), reject func(error)) {
-		is_success := true
-		if is_success {
-			resolve(1)
-		} else {
-			er := errors.New("Rejected Message ")
-			reject(er)
-		}
-	})
-
-	p.then(func(msg interface{}) interface{} {
-		val := msg.(int)
-		fmt.Println("Then", val*3)
-		err := errors.New("Then Error")
-		return err
-	}, func(err error) interface{} {
-		return 2
-	}).catch(func(err error) interface{} {
-		fmt.Println(err)
-		return 8
-	}).finally(func() interface{} {
-		fmt.Println("Finally")
-		return 4
-	})
-
-	// fmt.Println(x)
-
-	//===============================================================
-	time.Sleep(time.Second * 2)
-
 }
