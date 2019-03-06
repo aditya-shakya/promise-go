@@ -69,7 +69,9 @@ func NewPromise(runner func(resolve func(interface{}), reject func(error))) *Pro
 	p.state = "pending"
 	p.success = make(chan interface{})
 	p.failure = make(chan error)
+	p.wg.Add(1)
 	go func() {
+		p.wg.Done()
 		select {
 		case result := <-p.success:
 			p.mux.RLock()
@@ -126,6 +128,7 @@ func (pr *Promise) execute_and_pass_final(onFinally func() interface{}) {
 func (p *Promise) Catch(onRejected func(error) interface{}) *Promise {
 	pr := NewPromise(func(resolve func(interface{}), reject func(error)) {})
 	go func() {
+		p.wg.Wait()
 		if p.state == "pending" {
 			failure := p.addFailureListner()
 			select {
@@ -142,6 +145,7 @@ func (p *Promise) Catch(onRejected func(error) interface{}) *Promise {
 func (p *Promise) Then(onFulfilled func(interface{}) interface{}, onRejected func(error) interface{}) *Promise {
 	pr := NewPromise(func(resolve func(interface{}), reject func(error)) {})
 	go func() {
+		p.wg.Wait()
 		if p.state == "pending" {
 			failure := p.addFailureListner()
 			success := p.addSuccessListner()
@@ -163,6 +167,7 @@ func (p *Promise) Then(onFulfilled func(interface{}) interface{}, onRejected fun
 func (p *Promise) Finally(onFinally func() interface{}) *Promise {
 	pr := NewPromise(func(resolve func(interface{}), reject func(error)) {})
 	go func() {
+		p.wg.Wait()
 		if p.state == "pending" {
 			failure := p.addFailureListner()
 			success := p.addSuccessListner()
